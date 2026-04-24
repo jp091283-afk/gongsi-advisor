@@ -1026,83 +1026,142 @@ function normStr(s){
   return (s||'').replace(/[\s()·ㆍ\-\.\[\]「」]/g,'');
 }
 
+// 검색 결과 캐시 (같은 키워드 재검색 시 즉시 반환)
+var _dartCache = {};
+
 function searchDart(formName, dartKeyword, pblntf_ty){
   var key=DART_KEY||sessionStorage.getItem('_dk')||'';
   window._dd={key:key.substring(0,8),formName:formName,dartKeyword:dartKeyword,
     pblntf_ty:pblntf_ty,rawCount:0,matchCount:0,errors:[],samples:[],status:''};
   if(!key){window._dd.errors.push('API 키 없음');return Promise.resolve(null);}
 
+  var fn_n=normStr(formName), dk_n=normStr(dartKeyword||'');
+  var fn_key=dk_n.length>=3?dk_n:fn_n.substring(0,8);
+  var fn4=fn_key.substring(0,4);
+  window._dd.fn_key=fn_key;
+
+  // 캐시 확인 (오늘 날짜 기준)
+  var today=new Date().toISOString().slice(0,10);
+  var cacheKey=fn_key+'_'+today;
+  if(_dartCache[cacheKey]){
+    window._dd.status='캐시';
+    window._dd.matchCount=_dartCache[cacheKey].length;
+    return Promise.resolve(_dartCache[cacheKey]);
+  }
+
   var endD=new Date(),startD=new Date();
   startD.setMonth(startD.getMonth()-3);
   var end=endD.toISOString().slice(0,10).replace(/-/g,'');
   var start=startD.toISOString().slice(0,10).replace(/-/g,'');
-  var base=location.origin+'/api/dart?crtfc_key='+key+'&bgn_de='+start+'&end_de='+end;
 
-  var fn_n=normStr(formName), dk_n=normStr(dartKeyword||'');
-  var fn_key=dk_n.length>=3?dk_n:fn_n.substring(0,8);
-  var fn4=fn_key.substring(0,4);
-  window._dd.fn_key=fn_key; window._dd.dk_key=fn_key;
+  // DART API URL 빌더 - 직접 호출 우선, 프록시 후순위
+  var dartBase='https://opendart.fss.or.kr/api/list.json';
+  var proxyBase=location.origin+'/api/dart';
 
-  // KIND는 하루 수백건 → 20페이지(2000건)까지 검색 (무료 40,000건/일 기준 충분)
-  var urls=[
-    base+'&pblntf_ty=I&page_no=1&page_count=100',
-    base+'&pblntf_ty=I&page_no=2&page_count=100',
-    base+'&pblntf_ty=I&page_no=3&page_count=100',
-    base+'&pblntf_ty=I&page_no=4&page_count=100',
-    base+'&pblntf_ty=I&page_no=5&page_count=100',
-    base+'&pblntf_ty=I&page_no=6&page_count=100',
-    base+'&pblntf_ty=I&page_no=7&page_count=100',
-    base+'&pblntf_ty=I&page_no=8&page_count=100',
-    base+'&pblntf_ty=I&page_no=9&page_count=100',
-    base+'&pblntf_ty=I&page_no=10&page_count=100',
-    base+'&pblntf_ty=I&page_no=11&page_count=100',
-    base+'&pblntf_ty=I&page_no=12&page_count=100',
-    base+'&pblntf_ty=I&page_no=13&page_count=100',
-    base+'&pblntf_ty=I&page_no=14&page_count=100',
-    base+'&pblntf_ty=I&page_no=15&page_count=100',
-    base+'&pblntf_ty=I&page_no=16&page_count=100',
-    base+'&pblntf_ty=I&page_no=17&page_count=100',
-    base+'&pblntf_ty=I&page_no=18&page_count=100',
-    base+'&pblntf_ty=I&page_no=19&page_count=100',
-    base+'&pblntf_ty=I&page_no=20&page_count=100',
-    base+'&pblntf_ty=B&page_no=1&page_count=100',
-    base+'&pblntf_ty=B&page_no=2&page_count=100',
-    base+'&pblntf_ty=B&page_no=3&page_count=100',
-    base+'&pblntf_ty=D&page_no=1&page_count=100',
-  ];
+  function buildUrl(useProxy, type, page){
+    var qs='?crtfc_key='+key+'&bgn_de='+start+'&end_de='+end
+          +'&pblntf_ty='+type+'&page_no='+page+'&page_count=100';
+    return useProxy ? proxyBase+qs : dartBase+qs;
+  }
 
   function matchScore(item){
     var nm_n=normStr(item.report_nm||'');
-    if(fn_key&&nm_n.indexOf(fn_key)>=0)return 3;   // 정확 매칭
-    if(fn4&&fn4.length>=3&&nm_n.indexOf(fn4)>=0)return 2;  // 앞 4자 매칭
+    if(fn_key&&nm_n.indexOf(fn_key)>=0)return 3;
+    if(fn4&&fn4.length>=3&&nm_n.indexOf(fn4)>=0)return 2;
     return 0;
   }
 
-  return Promise.all(urls.map(function(url){
-    return fetch(url).then(function(r){return r.json();})
-      .catch(function(){return {status:'ERR'};});
-  })).then(function(responses){
+  function filterList(list){
     var seen={},matched=[];
-    responses.forEach(function(data){
-      if(data.status!=='000'||!data.list){
-        if(data.status&&data.status!=='000'&&data.status!=='ERR')
-          window._dd.errors.push(data.status+' '+(data.message||''));
-        return;
-      }
-      window._dd.rawCount+=data.list.length;
-      if(!window._dd.samples.length)
-        window._dd.samples=data.list.slice(0,5).map(function(i){return i.report_nm;});
-      data.list.forEach(function(item){
-        if(seen[item.rcept_no])return;
-        var sc=matchScore(item);
-        if(sc>0){seen[item.rcept_no]=true;matched.push({item:item,score:sc});}
-      });
+    (list||[]).forEach(function(item){
+      if(seen[item.rcept_no])return;
+      var sc=matchScore(item);
+      if(sc>0){seen[item.rcept_no]=true;matched.push({item:item,score:sc});}
     });
     matched.sort(function(a,b){return b.score-a.score;});
-    window._dd.matchCount=matched.length;
-    var best=matched.filter(function(m){return m.score>=3;});
-    if(!best.length)best=matched.filter(function(m){return m.score>=2;});
-    return best.length?best.slice(0,8).map(function(m){return m.item;}):null;
+    return matched;
+  }
+
+  function fetchOne(url){
+    return fetch(url,{signal:AbortSignal.timeout?AbortSignal.timeout(8000):undefined})
+      .then(function(r){return r.json();})
+      .catch(function(){return {status:'ERR'};});
+  }
+
+  function runPhase(useProxy, pages){
+    var urls=[];
+    pages.forEach(function(pg){
+      urls.push(buildUrl(useProxy,'I',pg));
+    });
+    urls.push(buildUrl(useProxy,'B',1));
+    urls.push(buildUrl(useProxy,'D',1));
+    return Promise.all(urls.map(fetchOne)).then(function(responses){
+      var allMatched=[];
+      responses.forEach(function(data){
+        if(data.status!=='000'||!data.list){
+          if(data.status&&data.status!=='000'&&data.status!=='ERR')
+            window._dd.errors.push(data.status+' '+(data.message||''));
+          return;
+        }
+        window._dd.rawCount+=data.list.length;
+        if(!window._dd.samples.length)
+          window._dd.samples=data.list.slice(0,5).map(function(i){return i.report_nm;});
+        filterList(data.list).forEach(function(m){allMatched.push(m);});
+      });
+      allMatched.sort(function(a,b){return b.score-a.score;});
+      return allMatched;
+    });
+  }
+
+  function runExtended(useProxy){
+    var extPages=[];
+    for(var p=2;p<=20;p++) extPages.push(p);
+    var bUrls=[
+      buildUrl(useProxy,'B',2),
+      buildUrl(useProxy,'B',3),
+    ];
+    return Promise.all(
+      extPages.map(function(p){return fetchOne(buildUrl(useProxy,'I',p));})
+      .concat(bUrls.map(fetchOne))
+    ).then(function(responses){
+      var allMatched=[];
+      responses.forEach(function(data){
+        if(data.status!=='000'||!data.list)return;
+        window._dd.rawCount+=data.list.length;
+        filterList(data.list).forEach(function(m){allMatched.push(m);});
+      });
+      return allMatched;
+    });
+  }
+
+  // 1단계: 직접 호출 시도 (Render 배포 환경에서는 빠름)
+  return runPhase(false,[1]).then(function(matched){
+    window._dd.via='direct-p1';
+    if(matched.length>0){
+      _dartCache[cacheKey]=matched.slice(0,8).map(function(m){return m.item;});
+      window._dd.matchCount=matched.length;
+      return _dartCache[cacheKey];
+    }
+    // 2단계: 프록시로 확장 검색
+    return runPhase(true,[1]).then(function(m2){
+      window._dd.via='proxy-p1';
+      var all=matched.concat(m2);
+      if(all.length>0){
+        all.sort(function(a,b){return b.score-a.score;});
+        _dartCache[cacheKey]=all.slice(0,8).map(function(m){return m.item;});
+        window._dd.matchCount=all.length;
+        return _dartCache[cacheKey];
+      }
+      // 3단계: 확장 페이지 검색
+      return runExtended(true).then(function(m3){
+        window._dd.via='proxy-ext';
+        var all2=all.concat(m3);
+        all2.sort(function(a,b){return b.score-a.score;});
+        window._dd.matchCount=all2.length;
+        _dartCache[cacheKey]=all2.length>0?all2.slice(0,8).map(function(m){return m.item;}):null;
+        return _dartCache[cacheKey];
+      });
+    });
   }).catch(function(e){
     window._dd.errors.push('오류: '+e.message);
     return null;
