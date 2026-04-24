@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: gongsi-advisor
+    env: python
+    buildCommand: echo "build done"
+    startCommand: python app.py
